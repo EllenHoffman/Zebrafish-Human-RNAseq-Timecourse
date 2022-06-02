@@ -1,0 +1,750 @@
+---
+title: "RNAseqzebhuman"
+author: "April Pruitt"
+date: "2/28/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+setwd("/Users/aprilpruitt/")
+knitr::opts_knit$set(root.dir = "/Users/aprilpruitt/", cache = TRUE, autodep = TRUE)
+par(mar=c(1,1,1,1), cex.axis=0.5, mfrow=c(1,1))
+
+output_dir = "/Users/aprilpruitt/ZebHumanRNAseq/"
+#dir.create(output_dir, recursive = TRUE, showWarnings = TRUE)
+```
+
+```{}
+#The above code is what pops up when using R Markdown; you can choose what type of output (html, PDF, word). Also to make this section of extended notes, use what is in line 10. You can tell this is just notes and not a chunk by the fact that it is not called a "chunk" if you mouse over. Don't forget to begin and end sections with the three backticks
+#Trial Zebrafish to Human RNAseq correlation
+#load packages-these are a combination of packages from J. Willsey code and DIY Transcriptomics course
+```
+
+```{r, include=FALSE}
+rm(list=ls())
+library(tidyverse) #provides access to Hadley Wickham's collection of R packages for data science
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("ensembldb")
+
+#library(ensembldb) #helps deal with ensembl
+library(datapasta) #great for copy/paste into R environment
+library(org.Dr.eg.db) #genome wide annotation for zebrafish
+library(RColorBrewer)
+library(ggrepel)
+library(directlabels)
+library(heatmap3)
+library(dendextend)
+library(scales)
+library(matrixStats)
+library(gridExtra)
+library(preprocessCore)
+library(ggplot2) #for making plots
+library(data.table)
+library(knitr)
+library(stringr)
+library(plyr); library(dplyr);
+library(plotly)
+
+#install org.Hs.eg.db
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("org.Hs.eg.db")
+#library(org.Hs.eg.db) #genome wide annotation for human
+
+#install ggbiplot
+library(devtools)
+install_github("vqv/ggbiplot")
+library(ggbiplot)
+
+#install kableExtra
+install.packages("systemfonts")
+library(kableExtra)
+```
+
+```{r, include=F}
+  april.pca <- function(g1, pc.1=1, pc.2=3, my.title){ #this chunk of code comes from Willsey; this is a function to create a PCA. These lines and the following lines include specifics of colors, sizes, dots, etc. The rest of this section is a lot of calling and describing functions. I modified Willsey's code for our use of zebrafish
+    g1 <- g1 + geom_point(size = 3) + 
+      coord_fixed() + 
+      xlab(paste0("PC", pc.1, ": ", round(percentVar[pc.1] * 100), "% variance")) + 
+      ylab(paste0("PC", pc.2, ": ", round(percentVar[pc.2] * 100), "% variance")) + 
+      ggtitle(my.title) + NULL
+    return(g1)
+  }
+  
+  april.plot.density <- function(df, title, my.ylim, my.xlim){
+    zeb <- grep("dpf", colnames(df), value = T)
+    human <- colnames(df)[!colnames(df) %in% zeb]
+    plot(density(df[,1]),col="white",lwd=3,ylim=my.ylim, xlim=my.xlim, main=title)
+    for(i in human){lines(density(df[,i]),lwd=1,col="#9FB1D4")}
+    for(i in zeb){lines(density(df[,i]),lwd=1,col="green")}
+  }
+  
+  
+  april.ggbiplot <- function (pcobj, genes.of.interest = c("A2M","AADAC"),
+                               choices = 1:2, scale = 1, pc.biplot = TRUE, 
+                               obs.scale = 1 - scale, var.scale = scale, groups = NULL, 
+                               ellipse = FALSE, ellipse.prob = 0.68, labels = NULL, labels.size = 3, 
+                               alpha = 1, var.axes = TRUE, circle = FALSE, circle.prob = 0.69, 
+                               varname.size = 3, varname.adjust = 1.5, varname.abbrev = FALSE) {
+    library(ggplot2)
+    library(plyr)
+    library(scales)
+    library(grid)
+    stopifnot(length(choices) == 2)
+    if (inherits(pcobj, "prcomp")) {
+      nobs.factor <- sqrt(nrow(pcobj$x) - 1)
+      d <- pcobj$sdev
+      u <- sweep(pcobj$x, 2, 1/(d * nobs.factor), FUN = "*")
+      v <- pcobj$rotation
+    }
+    else {
+      stop("Expected a object of class prcomp")
+    }
+    choices <- pmin(choices, ncol(u))
+    df.u <- as.data.frame(sweep(u[, choices], 2, d[choices]^obs.scale, 
+                                FUN = "*"))
+    v <- sweep(v, 2, d^var.scale, FUN = "*")
+    df.v <- as.data.frame(v[, choices])
+    names(df.u) <- c("xvar", "yvar")
+    names(df.v) <- names(df.u)
+    df.u <- df.u * nobs.factor
+    r <- sqrt(qchisq(circle.prob, df = 2)) * prod(colMeans(df.u^2))^(1/4)
+    v.scale <- rowSums(v^2)
+    df.v <- r * df.v/sqrt(max(v.scale))
+    if (obs.scale == 0) {
+      u.axis.labs <- paste("standardized PC", choices, sep = "")
+    }
+    else {
+      u.axis.labs <- paste("PC", choices, sep = "")
+    }
+    u.axis.labs <- paste(u.axis.labs, sprintf("(%0.1f%% explained var.)", 
+                                              100 * pcobj$sdev[choices]^2/sum(pcobj$sdev^2)))
+    if (!is.null(labels)) {
+      df.u$labels <- labels
+    }
+    if (!is.null(groups)) {
+      df.u$groups <- groups
+    }
+    if (varname.abbrev) {
+      df.v$varname <- abbreviate(rownames(v))
+    }
+    else {
+      df.v$varname <- rownames(v)
+    }
+    df.v$angle <- with(df.v, (180/pi) * atan(yvar/xvar))
+    df.v$hjust = with(df.v, (1 - varname.adjust * sign(xvar))/2)
+    g <- ggplot(data = df.u, aes(x = xvar, y = yvar)) + xlab(u.axis.labs[1]) + 
+      ylab(u.axis.labs[2]) + coord_equal()
+    if (var.axes) {
+      if (circle) {
+        theta <- c(seq(-pi, pi, length = 50), seq(pi, -pi, 
+                                                  length = 50))
+        circle <- data.frame(xvar = r * cos(theta), yvar = r * 
+                               sin(theta))
+        g <- g + geom_path(data = circle, color = muted("white"), 
+                           size = 1/2, alpha = 1/3)
+      }
+      
+      g <- g + geom_segment(data = df.v[genes.of.interest,], aes(x = 0, y = 0, 
+                                                                 xend = xvar, yend = yvar), arrow = arrow(length = unit(1/2, 
+                                                                                                                        "picas")), color = muted("red"))
+    }
+    if (!is.null(df.u$labels)) {
+      if (!is.null(df.u$groups)) {
+        g <- g + geom_text(aes(label = labels, color = groups), 
+                           size = labels.size)
+      }
+      else {
+        g <- g + geom_text(aes(label = labels), size = labels.size)
+      }
+    }
+    else {
+      if (!is.null(df.u$groups)) {
+        g <- g + geom_point(aes(color = groups), alpha = alpha)
+      }
+      else {
+        g <- g + geom_point(alpha = alpha)
+      }
+    }
+    if (!is.null(df.u$groups) && ellipse) {
+      theta <- c(seq(-pi, pi, length = 50), seq(pi, -pi, length = 50))
+      circle <- cbind(cos(theta), sin(theta))
+      ell <- ddply(df.u, "groups", function(x) {
+        if (nrow(x) <= 2) {
+          return(NULL)
+        }
+        sigma <- var(cbind(x$xvar, x$yvar))
+        mu <- c(mean(x$xvar), mean(x$yvar))
+        ed <- sqrt(qchisq(ellipse.prob, df = 2))
+        data.frame(sweep(circle %*% chol(sigma) * ed, 2, 
+                         mu, FUN = "+"), groups = x$groups[1])
+      })
+      names(ell)[1:2] <- c("xvar", "yvar")
+      g <- g + geom_path(data = ell, aes(color = groups, group = groups))
+    }
+    if (var.axes) {
+      g <- g + geom_text(data = df.v[genes.of.interest,], aes(label = varname, 
+                                                              x = xvar, y = yvar, angle = angle, hjust = hjust), 
+                         color = "darkred", size = varname.size)
+    }
+    return(g)
+  }
+  
+  april.ggbiplot2 <- function (pcobj,
+                               choices = 1:2, scale = 1, pc.biplot = TRUE, 
+                               obs.scale = 1 - scale, var.scale = scale, groups = NULL, 
+                               ellipse = FALSE, ellipse.prob = 0.68, labels = NULL, labels.size = 3, 
+                               alpha = 1, var.axes = TRUE, circle = FALSE, circle.prob = 0.69, 
+                               varname.size = 3, varname.adjust = 1.5, varname.abbrev = FALSE) {
+    library(ggplot2)
+    library(plyr)
+    library(scales)
+    library(grid)
+    stopifnot(length(choices) == 2)
+    if (inherits(pcobj, "prcomp")) {
+      nobs.factor <- sqrt(nrow(pcobj$x) - 1)
+      d <- pcobj$sdev
+      u <- sweep(pcobj$x, 2, 1/(d * nobs.factor), FUN = "*")
+      v <- pcobj$rotation
+    }
+    else {
+      stop("Expected a object of class prcomp")
+    }
+    choices <- pmin(choices, ncol(u))
+    df.u <- as.data.frame(sweep(u[, choices], 2, d[choices]^obs.scale, 
+                                FUN = "*"))
+    v <- sweep(v, 2, d^var.scale, FUN = "*")
+    df.v <- as.data.frame(v[, choices])
+    names(df.u) <- c("xvar", "yvar")
+    names(df.v) <- names(df.u)
+    df.u <- df.u * nobs.factor
+    r <- sqrt(qchisq(circle.prob, df = 2)) * prod(colMeans(df.u^2))^(1/4)
+    v.scale <- rowSums(v^2)
+    df.v <- r * df.v/sqrt(max(v.scale))
+    if (obs.scale == 0) {
+      u.axis.labs <- paste("standardized PC", choices, sep = "")
+    }
+    else {
+      u.axis.labs <- paste("PC", choices, sep = "")
+    }
+    u.axis.labs <- paste(u.axis.labs, sprintf("(%0.1f%% explained var.)", 
+                                              100 * pcobj$sdev[choices]^2/sum(pcobj$sdev^2)))
+    if (!is.null(labels)) {
+      df.u$labels <- labels
+    }
+    if (!is.null(groups)) {
+      df.u$groups <- groups
+    }
+    if (varname.abbrev) {
+      df.v$varname <- abbreviate(rownames(v))
+    }
+    else {
+      df.v$varname <- rownames(v)
+    }
+    df.v$angle <- with(df.v, (180/pi) * atan(yvar/xvar))
+    df.v$hjust = with(df.v, (1 - varname.adjust * sign(xvar))/2)
+    g <- ggplot(data = df.u, aes(x = xvar, y = yvar)) + xlab(u.axis.labs[1]) + 
+      ylab(u.axis.labs[2]) + coord_equal()
+    if (var.axes) {
+      if (circle) {
+        theta <- c(seq(-pi, pi, length = 50), seq(pi, -pi, 
+                                                  length = 50))
+        circle <- data.frame(xvar = r * cos(theta), yvar = r * 
+                               sin(theta))
+        g <- g + geom_path(data = circle, color = muted("white"), 
+                           size = 1/2, alpha = 1/3)
+      }
+      
+      g <- g + geom_segment(data = df.v, aes(x = 0, y = 0, 
+                                             xend = xvar, yend = yvar), arrow = arrow(length = unit(1/2, 
+                                                                                                    "picas")), color = muted("red"))
+    }
+    if (!is.null(df.u$labels)) {
+      if (!is.null(df.u$groups)) {
+        g <- g + geom_text(aes(label = labels, color = groups), 
+                           size = labels.size)
+      }
+      else {
+        g <- g + geom_text(aes(label = labels), size = labels.size)
+      }
+    }
+    else {
+      if (!is.null(df.u$groups)) {
+        g <- g + geom_point(aes(color = groups), alpha = alpha)
+      }
+      else {
+        g <- g + geom_point(alpha = alpha)
+      }
+    }
+    if (!is.null(df.u$groups) && ellipse) {
+      theta <- c(seq(-pi, pi, length = 50), seq(pi, -pi, length = 50))
+      circle <- cbind(cos(theta), sin(theta))
+      ell <- ddply(df.u, "groups", function(x) {
+        if (nrow(x) <= 2) {
+          return(NULL)
+        }
+        sigma <- var(cbind(x$xvar, x$yvar))
+        mu <- c(mean(x$xvar), mean(x$yvar))
+        ed <- sqrt(qchisq(ellipse.prob, df = 2))
+        data.frame(sweep(circle %*% chol(sigma) * ed, 2, 
+                         mu, FUN = "+"), groups = x$groups[1])
+      })
+      names(ell)[1:2] <- c("xvar", "yvar")
+      g <- g + geom_path(data = ell, aes(color = groups, group = groups))
+    }
+    if (var.axes) {
+      g <- g + geom_text(data = df.v, aes(label = varname, 
+                                          x = xvar, y = yvar, angle = angle, hjust = hjust), 
+                         color = "darkred", size = varname.size)
+    }
+    return(df.u)
+  }
+```
+
+#download zebrafish data
+```{r}
+trim.cts <- read.csv("/Users/aprilpruitt/White_plus_6_timecourse.csv", row.names = 1)
+output_dir = "/Users/aprilpruitt/"
+metadata <- read.csv(paste0(output_dir,"/White_plus_6_timecourse_metadata.csv"))
+zebrafishlevels <- sort(unique(metadata$Condition))
+```
+
+```{r, echo=F}
+zeb.gene.lengths <- read.csv("White_and_Ensembl_GC_lengths.csv", row.names = 1)
+trim.cts <- merge(trim.cts, zeb.gene.lengths, by="row.names")
+rownames(trim.cts) <- trim.cts$Row.names
+trim.cts <- trim.cts[, -1]
+
+zebsamples <- grep("dpf", colnames(trim.cts), value=T)
+
+d <- trim.cts[, colnames(trim.cts) %in% zebsamples]
+l <- trim.cts [, "Length"]/10^3 #transform to kilobase
+cS <- colSums(d) #Total mapped reads per sample
+
+rpkm <- (10^6)*t(t(d/l)/cS)
+
+norm.counts.annotated <- merge(rpkm, trim.cts[, !colnames(trim.cts) %in% grep("dpf", colnames(trim.cts), value=T)], by="row.names",all=T)
+rownames(norm.counts.annotated) <- norm.counts.annotated$Row.names
+norm.counts.annotated <- norm.counts.annotated[, -1]
+
+april.plot.density(log2(norm.counts.annotated[,zebsamples]+1), title=paste0("log2(RPKM) Zebrafish (n=",nrow(norm.counts.annotated[,zebsamples]),")\ngreen=zeb, purple=brainspan"), my.ylim =c(0,0.5), my.xlim = c(-1,15))
+```
+
+#Step 2: Load BrainSpan RNAseq data
+```{}
+https://www.brainspan.org/static/download.html
+RNA-Seq Gencode v10 summarized to genes
+```
+
+```{r, include=F}
+#LOAD IN BRAIN SPAN DATA
+brain_span <- read.csv("/Users/aprilpruitt/rnaseq_genes_matrix_csv/expression_matrix.csv", header = F)
+brain_span_meta_row <- read.csv("/Users/aprilpruitt/rnaseq_genes_matrix_csv/rows_metadata.csv")
+brain_span_meta_col <- read.csv("/Users/aprilpruitt/rnaseq_genes_matrix_csv/columns_metadata.csv")
+rownames(brain_span) <- make.names(brain_span_meta_row$gene_symbol, unique = T)
+brain_span <- brain_span[,-1]
+full_id <- gsub(" ", "", paste0(brain_span_meta_col$structure_acronym, "_",
+                                brain_span_meta_col$age, "_", brain_span_meta_col$donor_id))
+colnames(brain_span) <-  brain_span_meta_col$FullID <- full_id
+
+
+#Make helpful metadata columns
+bs_metadata <- brain_span_meta_col
+bs_metadata$tmpage <- as.numeric(ifelse(bs_metadata$age %in% 
+                                          grep("pcw", bs_metadata$age, value = T),
+                             gsub("pcw", "", bs_metadata$age), 10000))
+bs_metadata$AgeGroup <- "Other"
+bs_metadata[bs_metadata$tmpage < 13, "AgeGroup"] <- "Early fetal"
+bs_metadata[bs_metadata$tmpage >=13 & bs_metadata$tmpage <19, "AgeGroup"] <- "Early Mid fetal"
+bs_metadata[bs_metadata$tmpage >=19 & bs_metadata$tmpage <24, "AgeGroup"] <- "Late Mid fetal"
+bs_metadata[bs_metadata$tmpage >=24 & bs_metadata$tmpage <38, "AgeGroup"] <- "Late fetal"
+bs_metadata[bs_metadata$age == "4 mos", "AgeGroup"] <- "Neonatal and early infancy"
+bs_metadata[bs_metadata$age %in% c("6 mos","10 mos", "12 mos"), "AgeGroup"] <- "Late infancy"
+bs_metadata$tmpage <- as.numeric(ifelse(bs_metadata$age %in% 
+                                          grep("yrs", bs_metadata$age, value = T),
+                             gsub("yrs", "", bs_metadata$age), 10000))
+bs_metadata[bs_metadata$tmpage < 6 & bs_metadata$tmpage >=1 , "AgeGroup"] <- "Early childhood"
+bs_metadata[bs_metadata$tmpage < 12 & bs_metadata$tmpage >=6 , "AgeGroup"] <- "Middle and Late childhood"
+bs_metadata[bs_metadata$tmpage < 20 & bs_metadata$tmpage >=12 , "AgeGroup"] <- "Adolescence"
+bs_metadata[bs_metadata$tmpage < 40 & bs_metadata$tmpage >=20 , "AgeGroup"] <- "Young adulthood"
+bs_metadata[bs_metadata$tmpage < 1000 & bs_metadata$tmpage >=40, "AgeGroup"] <- "Adulthood"
+agelevels=c("Early fetal", "Early Mid fetal", "Late Mid fetal", "Late fetal", "Neonatal and early infancy", "Late infancy", "Early childhood", "Middle and Late childhood", "Adolescence", "Young adulthood", "Adulthood")
+bs_metadata$AgeGroup <- factor(bs_metadata$AgeGroup, level=agelevels)
+
+bs_metadata$Struc_Group <- "Other"
+bs_metadata[bs_metadata$structure_acronym %in% c("DFC","VFC","MFC","OFC","M1C-S1C","M1C","S1C"), ]$Struc_Group <- "PFC-MSC"
+bs_metadata[bs_metadata$structure_acronym %in% c("V1C","IPC"), ]$Struc_Group <- "IPC-V1C"
+bs_metadata[bs_metadata$structure_acronym %in% c("HIP","STR"), ]$Struc_Group <- "HIP-STR"
+bs_metadata[bs_metadata$structure_acronym %in% c("MD","CBC"), ]$Struc_Group <- "MD-CBC"
+```
+
+```{}
+#IF WE WANT TO MERGE BY DONOR
+tmp <- t(brain_span)
+tmp2 <- merge(tmp, bs_metadata[,c("FullID","donor_id")], by.x="row.names", by.y="FullID", all.x=T)
+rownames(tmp2) <- tmp2$Row.names; tmp2 <- tmp2[,-1]
+
+a <- colnames(tmp2)
+a[a!="donor_id"]
+
+tmp3 <- tmp2 %>%
+              group_by(donor_id) %>% 
+              summarise_at(vars(a[a!="donor_id"]), median)
+dim(tmp2)
+length(unique(tmp2$donor_id))
+dim(tmp3)
+brain_span <- t(tmp3[, !colnames(tmp3) %in% c("donor_id")])
+colnames(brain_span) <- tmp3$donor_id
+
+bs_metadata <- bs_metadata[, c("donor_id","age","AgeGroup")]
+bs_metadata$FullID <- bs_metadata$donor_id
+```
+
+```{r, echo=F}
+pca <- prcomp(t(brain_span[as.numeric(which(apply(brain_span, 1, var) > 0 )), ]), center = T, scale. = T)
+percentVar <- pca$sdev^2/sum(pca$sdev^2)
+d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2])
+e <- merge(d, bs_metadata, by.x="row.names", by.y="FullID", all=T)
+april.pca(ggplot(data = e, aes_string(x = "PC1", y = "PC2", color="AgeGroup")), 1, 2, "BrainSpan RNAseq PCA, all genes, all samples") 
+```
+
+```{r, echo=F}
+par(cex=1, mar = c(3,3,3,3), xpd=FALSE, mfrow=c(3,1))
+april.plot.density(log2(brain_span+1), title=paste0("BrainSpan log2(RPKM) (n=",nrow(brain_span),")\ngreen=zeb, purple=brainspan"), my.ylim =c(0,0.5),  my.xlim= c(-1,15))
+
+brain_span_sub2 <- brain_span[rowSums(brain_span) > 0,]
+brain_span_sub3 <- brain_span_sub2[rowSums(brain_span_sub2 > 3) >= 5,]
+april.plot.density(log2(brain_span_sub3+1), title=paste0("Low Exp. filtered (n=",nrow(brain_span_sub3),")\ngreen=zeb, purple=brainspan"), my.ylim =c(0,0.5),  my.xlim= c(-1,15))
+
+genes_in_common <- intersect(norm.counts.annotated$Human.gene.name, rownames(brain_span_sub3))
+brain_span_sub <- brain_span[rownames(brain_span) %in% genes_in_common, ]
+
+april.plot.density(log2(brain_span_sub+1), title=paste0("Genes in common w Zeb (n=",nrow(brain_span_sub),")\ngreen=zeb, purple=brainspan"), my.ylim =c(0,0.5),  my.xlim= c(-1,15))
+```
+
+#Step 4: Find genes in common, merge datasets
+```{r}
+#Merge metadata into one dataframe
+meta_complete <- merge(bs_metadata, metadata, by="FullID", all=T)
+meta_complete$Experiment<- ifelse(is.na(meta_complete$AgeGroup), 
+                                  "ZebrafishTC", "BrainSpan")
+meta_complete$AgeGroup <- as.factor(ifelse(is.na(meta_complete$AgeGroup), 
+                                  as.character(meta_complete$Condition),
+                                 as.character(meta_complete$AgeGroup)))
+alllevels <- c(as.character(agelevels), as.character(zebrafishlevels))
+meta_complete$AgeGroup <- factor(meta_complete$AgeGroup, levels=alllevels)
+  
+#find genes in common
+#genes_in_common <- intersect(norm.counts.annotated$hg19_GeneSymbol, rownames(brain_span))
+
+#subset brain span
+brain_span_sub <- brain_span[rownames(brain_span) %in% genes_in_common, ]
+dim(brain_span_sub)
+#subset xenopus
+norm_counts_sub <- norm.counts.annotated[norm.counts.annotated$Human.gene.name %in%
+                                           genes_in_common, ]
+dim(norm_counts_sub)
+
+#Need to collapse xenopus transcripts that go to same gene
+dup.geneSymbol <- norm_counts_sub$Human.gene.name[duplicated(norm_counts_sub$Human.gene.name)]
+dim(norm_counts_sub[norm_counts_sub$Human.gene.name %in% dup.geneSymbol, ])
+
+#collapse values, will take median of duplicated ones
+pt1 <- norm_counts_sub %>% 
+              group_by(Human.gene.name) %>% 
+              summarise_at(vars(all_of(zebsamples)), median)
+#collapse gene names into list for reference
+pt2 <- norm_counts_sub %>%
+              tibble::rownames_to_column() %>% 
+              group_by(Human.gene.name, Human.gene.stable.ID) %>% 
+              summarise_at(vars("rowname"), toString)
+
+zebTC_collapsed <- merge(pt1, pt2, by="Human.gene.name")
+rownames(zebTC_collapsed) <- zebTC_collapsed$Human.gene.name
+dim(zebTC_collapsed)
+```
+
+```{r}
+par(cex=1, mar = c(3,3,3,3), xpd=FALSE, mfrow=c(2,1))
+
+#merge them back together. 
+complete.cts <- merge(brain_span_sub, 
+                      zebTC_collapsed[, zebsamples],
+                      by="row.names", all=T)
+april.plot.density(log2(complete.cts[,-1]+1), title=paste0("Pre quant norm (n=",nrow(complete.cts[,-1]),")\ngreen=zeb, purple=brainspan"), my.ylim =c(0,0.5),  my.xlim= c(-1,15))
+
+
+complete.cts.cqn <- normalize.quantiles(as.matrix(complete.cts[,-1]), copy = TRUE)
+colnames(complete.cts.cqn) <- colnames(complete.cts[,-1])
+rownames(complete.cts.cqn) <- complete.cts[,1]
+
+#For PCA, var of all genes in subset need to be >0 
+a <- complete.cts.cqn[, !colnames(complete.cts.cqn) %in% zebsamples]
+BS.to.plot <- t(a[as.numeric(which(apply(a, 1, var) > 0 )), ])
+a <- complete.cts.cqn[, colnames(complete.cts.cqn) %in% zebsamples]
+ZEB.to.plot <- t(a[as.numeric(which(apply(a, 1, var) > 0 )), ])
+final.keep <- intersect(colnames(BS.to.plot), colnames(ZEB.to.plot))
+
+complete.cts.cqn <- complete.cts.cqn[final.keep, ] 
+april.plot.density(log2(complete.cts.cqn), title=paste0("Post quant norm (n=",nrow(complete.cts.cqn),")\ngreen=zeb, purple=brainspan"), my.ylim =c(0,0.5),  my.xlim= c(-1,15))
+
+complete.cts.cqn <- log2(complete.cts.cqn)
+
+par(mfrow=c(1,1))
+```
+
+###Standard PCAs with data built together
+```{r}
+BS.to.plot <- t(complete.cts.cqn[, !colnames(complete.cts.cqn) %in% zebsamples])
+ZEB.to.plot <- t(complete.cts.cqn[, colnames(complete.cts.cqn) %in% zebsamples])
+BS.to.plot[which(is.infinite(BS.to.plot))]<-NA #this identifies which values are infinite and assigns them as NA
+pca <- prcomp(na.omit(BS.to.plot), center = T, scale. = T) #this allows the pca to run by omitting the NA values
+percentVar <- pca$sdev^2/sum(pca$sdev^2)
+d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2])
+e <- merge(d, meta_complete, all=TRUE, by.x="row.names", by.y="FullID")
+g1 <- april.pca(ggplot(data = e, aes_string(x = "PC1", y = "PC2", color = "AgeGroup")), 1, 2, "BrainSpan RNAseq PCA,  filtered to common genes")
+
+pca <- prcomp(ZEB.to.plot, center = T, scale. = T)
+percentVar <- pca$sdev^2/sum(pca$sdev^2)
+d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2])
+e <- merge(d, meta_complete, all=TRUE, by.x="row.names", by.y="FullID")
+g2 <- april.pca(ggplot(data = e, aes_string(x = "PC1", y = "PC2", color = "Condition")), 1, 2, "Zebrafish PCA,  filtered to common genes")
+
+complete.cts.cqn[which(is.infinite(complete.cts.cqn))]<-NA #similarly to above lines 498 and 499
+pca <- prcomp(na.omit(complete.cts.cqn), center = T, scale. = T) #pca runs by omitting NA from dataframe
+
+percentVar <- pca$sdev^2/sum(pca$sdev^2)
+d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2])
+e <- merge(d, meta_complete, all=TRUE, by.x="row.names", by.y="FullID")
+g3 <- april.pca(ggplot(data = e, aes_string(x = "PC1", y = "PC2", color = "AgeGroup")), 1, 2, "PCA both, filtered to common genes")
+
+g1
+g2
+g3
+```
+
+
+###PCAs with Zebrafish data projected on
+```{r, fig.height=10, fig.width=10}
+BS.to.plot[which(is.na(BS.to.plot))]<-NA
+pca <- prcomp(na.omit(BS.to.plot), center = T, scale. = T)
+
+s.pred <- scale(ZEB.to.plot, center= pca$center, scale = pca$scale) %*% pca$rotation
+#using pca center and scaling, predict new vector and multiply it by original rotation matrix. 
+plusproj.pca <- pca
+plusproj.pca$x <- rbind(plusproj.pca$x, s.pred)
+a <- plusproj.pca$x
+
+label_order <- meta_complete[match(rownames(a),meta_complete$FullID), ]
+g1<- ggbiplot(plusproj.pca, var.axes=FALSE, groups=c(label_order$Experiment)) + ggtitle("PCA: BrainSpan Data w/Zebrafish data projected on") 
+g2 <- ggbiplot(plusproj.pca, var.axes=FALSE, groups=label_order$AgeGroup) + ggtitle("PCA: BrainSpan Data w/Zebrafish data projected on") 
+g3 <- ggbiplot(plusproj.pca, var.axes=FALSE, groups=label_order$Struc_Group) + ggtitle("PCA: BrainSpan Data w/Zebrafish data projected on") 
+grid.arrange(g1, g3, ncol=2)
+g2
+```
+
+```{r}
+d <- april.ggbiplot2(plusproj.pca, var.axes=FALSE) 
+colnames(d) <- c("PC1","PC2")
+metad <- merge(d, label_order, by.x="row.names",by.y="FullID", all.x=T)
+write.csv(metad, file=paste0(output_dir, "PCA_object_RNAseq_White_plus_6_timecourse.csv"))
+```
+
+###Just Fetal stages
+```{r, echo=F, fig.height=10, fig.width=10}
+fetalTPs <- unique(grep("fetal|16hpf|19hpf|24hpf|30hpf|36hpf|2dpf|3dpf|4dpf|5dpf|6dpf_brain", meta_complete$AgeGroup, value=T))
+to.keep <- meta_complete[meta_complete$AgeGroup %in% fetalTPs , "FullID" ]
+
+BS.to.plot[rownames(BS.to.plot) %in% to.keep, ][which(is.na(BS.to.plot[rownames(BS.to.plot) %in% to.keep, ]))]<- NA
+pca <- prcomp(na.omit(BS.to.plot[rownames(BS.to.plot) %in% to.keep, ]), center = T, scale. = T)
+
+s.pred <- scale(ZEB.to.plot, center= pca$center, scale = pca$scale) %*% pca$rotation
+plusproj.pca <- pca
+plusproj.pca$x <- rbind(plusproj.pca$x, s.pred)
+a <- plusproj.pca$x
+
+label_order <- meta_complete[match(rownames(a),meta_complete$FullID), ]
+ggbiplot(plusproj.pca, var.axes=FALSE, groups=c(label_order$Experiment)) + ggtitle("BrainSpan 'pcw' w/Zebrafish data projected on") 
+
+percentVar <- plusproj.pca$sdev^2/sum(plusproj.pca$sdev^2)
+d <- april.ggbiplot2(plusproj.pca, var.axes=FALSE) 
+colnames(d) <- c("PC1","PC2")
+metad <- merge(d, label_order, by.x="row.names",by.y="FullID", all.x=T)
+
+p <- ggplot(data=metad, aes(x=PC1, y=PC2, color=AgeGroup))+
+  geom_point(data=metad, aes(x=PC1, y=PC2, color=AgeGroup), size=4) +
+    scale_color_manual(name= "Post-Conceptional Week",
+                     values=c(rev(brewer.pal(4, "Spectral")), rep("black",11))) +
+  ggrepel::geom_label_repel(data=metad[!is.na(metad$Rep) & metad$Rep==1, ], 
+                             aes(label=Condition),show.legend = F, 
+                             cex=3,
+                             box.padding = 0.25, fill="white") +
+  ggtitle("Zebrafish Reflects Human mid fetal") +
+  xlab(paste0("standardized PC1 (", round(percentVar[1] * 100, 1), "% explained var.)")) + 
+  ylab(paste0("standardized PC2 (", round(percentVar[2] * 100, 1), "% explained var.)")) +
+  theme_bw()+
+  NULL
+p
+```
+
+```{r}
+write.csv(metad, file=paste0(output_dir, "PCA_object_RNAseq_pcw_White_plus_6_timecourse.csv"))
+```
+
+##What genes are contributing to PC1 vs PC2?
+```{r, fig.height=10, fig.width=10}
+genes.of.interest <-c("PAX6","SOX2","TBR1","EOMES")
+april.ggbiplot(plusproj.pca, genes.of.interest, var.axes=T, groups=label_order$AgeGroup) 
+
+  
+a<- pca$rotation[,"PC1"]
+top10_pc1_genes <- names(head(a[order(abs(a), decreasing = T)], n=10))
+a<- pca$rotation[,"PC2"]
+top10_pc2_genes <- names(head(a[order(abs(a), decreasing = T)], n=10))
+genes.of.interest <-c(top10_pc1_genes, top10_pc2_genes)
+april.ggbiplot(plusproj.pca, genes.of.interest, var.axes=T, groups=label_order$AgeGroup)  
+```
+
+```{r, echo=F}
+a <- pca$x[,"PC1"]
+heatmap3(complete.cts.cqn[top10_pc1_genes, names((a[order(a)]))], labCol = NA, Colv = NA, main="Top10 PC1 contributing genes (ordered according to PC1)")
+
+a <- pca$x[,"PC2"]
+heatmap3(complete.cts.cqn[top10_pc2_genes, names((a[order(a)]))], labCol = NA, Colv = NA, main="Top10 PC2 contributing genes (ordered according to PC2)")
+```
+
+```{r}
+a <- pca$rotation[,"PC1"]
+b <- pca$rotation[,"PC2"]
+topcontributingPCgene <- data.frame(PC1 = names(head(a[order(abs(a), decreasing = T)], n=100)),
+                                    PC1_loading = head(a[order(abs(a), decreasing = T)], n=100),
+                                    PC1_towardsLateFetal = ifelse(
+                                      head(a[order(abs(a), decreasing = T)], n=100) > 0, "up", "down" ),
+                                    PC2 = names(head(b[order(abs(b), decreasing = T)], n=100)),
+                                    PC2_loading = head(b[order(abs(b), decreasing = T)], n=100),
+                                    PC2_towardsEarlyFetal = ifelse(
+                                      head(b[order(abs(b), decreasing = T)], n=100) > 0, "up", "down" )
+                                    )
+write.csv(topcontributingPCgene, file=paste0(output_dir, "TopPCgenes_rnaseq_PCW_White_plus_6_timecourse.csv"))
+```
+
+
+
+###Just PostNatal stages
+```{r, echo=F, fig.height=10, fig.width=10}
+to.keep <- meta_complete[!meta_complete$AgeGroup %in% fetalTPs , "FullID" ]
+
+BS.to.plot[rownames(BS.to.plot) %in% to.keep, ][which(is.na(BS.to.plot[rownames(BS.to.plot) %in% to.keep, ]))]<- NA
+pca <- prcomp(na.omit(BS.to.plot[rownames(BS.to.plot) %in% to.keep, ]), center = T, scale. = T)
+
+s.pred <- scale(ZEB.to.plot, center= pca$center, scale = pca$scale) %*% pca$rotation
+plusproj.pca <- pca
+plusproj.pca$x <- rbind(plusproj.pca$x, s.pred)
+a <- plusproj.pca$x
+
+label_order <- meta_complete[match(rownames(a),meta_complete$FullID), ]
+ggbiplot(plusproj.pca, var.axes=FALSE, groups=c(label_order$Experiment)) + ggtitle("BrainSpan 'pcw' w/Zebrafish data projected on") 
+
+percentVar <- plusproj.pca$sdev^2/sum(plusproj.pca$sdev^2)
+d <- april.ggbiplot2(plusproj.pca, var.axes=FALSE) 
+colnames(d) <- c("PC1","PC2")
+metad <- merge(d, label_order, by.x="row.names",by.y="FullID", all.x=T)
+
+p <- ggplot(data=metad, aes(x=PC1, y=PC2, color=AgeGroup))+
+  geom_point(data=metad, aes(x=PC1, y=PC2, color=AgeGroup), size=4) +
+    scale_color_manual(name= "Postnatal Week",
+                     values=c(rev(brewer.pal(7, "Spectral")), rep("black",11))) +
+  ggrepel::geom_label_repel(data=metad[!is.na(metad$Rep) & metad$Rep==1, ], 
+                             aes(label=Condition),show.legend = F, 
+                             cex=3,
+                             box.padding = 0.25, fill="white") +
+  ggtitle("Zeb projected on post natal") +
+  xlab(paste0("standardized PC1 (", round(percentVar[1] * 100, 1), "% explained var.)")) + 
+  ylab(paste0("standardized PC2 (", round(percentVar[2] * 100, 1), "% explained var.)")) +
+  theme_bw()+
+  NULL
+p
+```
+
+
+###Just Cortex samples
+```{r, fig.height=10, fig.width=10}
+keep.bs.samples <- meta_complete[meta_complete$Struc_Group == "PFC-MSC", "FullID"]
+BS.to.plot.cortex <- t(complete.cts.cqn[, colnames(complete.cts.cqn) %in% keep.bs.samples])
+
+BS.to.plot.cortex[which(is.na(BS.to.plot.cortex))]<- NA
+pca <- prcomp(na.omit(BS.to.plot.cortex), center = T, scale. = T)
+
+s.pred <- scale(ZEB.to.plot, center= pca$center, scale = pca$scale) %*% pca$rotation
+plusproj.pca <- pca
+plusproj.pca$x <- rbind(plusproj.pca$x, s.pred)
+a <- plusproj.pca$x
+
+label_order <- meta_complete[match(rownames(a),meta_complete$FullID), ]
+label_order$age <- as.character(label_order$age)
+g1 <- ggbiplot(plusproj.pca, var.axes=FALSE, groups=c(label_order$Experiment)) + ggtitle("Only Cortex Samples") 
+g2 <- ggbiplot(plusproj.pca, var.axes=FALSE, groups=label_order$AgeGroup) + ggtitle("Only Cortex Samples") 
+grid.arrange(g1, g2, ncol=2)
+
+fetalTPs <- unique(grep("fetal|16hpf|19hpf|24hpf|30hpf|36hpf|2dpf|3dpf|4dpf|5dpf|6dpf_brain", meta_complete$AgeGroup, value=T))
+to.keep <- meta_complete[meta_complete$AgeGroup %in% fetalTPs , "FullID" ]
+pca <- prcomp(BS.to.plot.cortex[rownames(BS.to.plot.cortex) %in% to.keep, ], center = T, scale. = T)
+s.pred <- scale(ZEB.to.plot, center= pca$center, scale = pca$scale) %*% pca$rotation
+plusproj.pca <- pca
+plusproj.pca$x <- rbind(plusproj.pca$x, s.pred)
+a <- plusproj.pca$x
+
+label_order <- meta_complete[match(rownames(a),meta_complete$FullID), ]
+label_order$age <- as.character(label_order$age)
+g1 <- ggbiplot(plusproj.pca, var.axes=FALSE, groups=c(label_order$Experiment)) + ggtitle("Only Cortex Samples & only PCW") 
+g2 <- ggbiplot(plusproj.pca, var.axes=FALSE, groups=label_order$AgeGroup) + ggtitle("Only Cortex Samples & only PCW") 
+
+grid.arrange(g1, g2, ncol=2)
+```
+
+##What genes are contributing to PC1 vs PC2?
+```{r}
+genes.of.interest <-c("PAX6","SOX2","TBR1","EOMES")
+april.ggbiplot(plusproj.pca, genes.of.interest, var.axes=T, groups=label_order$AgeGroup) 
+
+  
+a<- pca$rotation[,"PC1"]
+top10_pc1_genes <- names(head(a[order(abs(a), decreasing = T)], n=10))
+a<- pca$rotation[,"PC2"]
+top10_pc2_genes <- names(head(a[order(abs(a), decreasing = T)], n=10))
+genes.of.interest <-c(top10_pc1_genes, top10_pc2_genes)
+april.ggbiplot(plusproj.pca, genes.of.interest, var.axes=T, groups=label_order$AgeGroup)  
+```
+
+```{r, echo=F}
+a <- pca$x[,"PC1"]
+heatmap3(complete.cts.cqn[top10_pc1_genes, names((a[order(a)]))], labCol = NA, Colv = NA, main="Top10 PC1 contributing genes (ordered according to PC1)")
+
+a <- pca$x[,"PC2"]
+heatmap3(complete.cts.cqn[top10_pc2_genes, names((a[order(a)]))], labCol = NA, Colv = NA, main="Top10 PC2 contributing genes (ordered according to PC2)")
+```
+
+```{r}
+a <- pca$rotation[,"PC1"]
+b <- pca$rotation[,"PC2"]
+topcontributingPCgene <- data.frame(PC1 = names(head(a[order(abs(a), decreasing = T)], n=100)),
+                                    PC1_loading = head(a[order(abs(a), decreasing = T)], n=100),
+                                    PC1_towardsLateFetal = ifelse(
+                                      head(a[order(abs(a), decreasing = T)], n=100) > 0, "up", "down" ),
+                                    PC2 = names(head(b[order(abs(b), decreasing = T)], n=100)),
+                                    PC2_loading = head(b[order(abs(b), decreasing = T)], n=100),
+                                    PC2_towardsEarlyFetal = ifelse(
+                                      head(b[order(abs(b), decreasing = T)], n=100) > 0, "up", "down" )
+                                    )
+write.csv(topcontributingPCgene, file=paste0(output_dir, "TopPCgenes_rnaseq_PCW_Cortex_White_plus_6_timecourse.csv"))
+```
+
+```{r}
+sessionInfo()
+```
